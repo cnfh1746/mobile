@@ -78,6 +78,7 @@ if (typeof window.StyleConfigManager === 'undefined') {
       this.configLoaded = false;
       this.styleElement = null;
       this.isReady = false;
+      this.activeConfigName = STYLE_CONFIG_FILE_NAME; // 默认为默认配置
 
       console.log('[Style Config Manager] 样式配置管理器初始化开始');
 
@@ -241,22 +242,41 @@ if (typeof window.StyleConfigManager === 'undefined') {
     // 从Data Bank加载配置
     async loadConfig() {
       try {
-        console.log('[Style Config Manager] 🔄 从Data Bank加载样式配置...');
+        console.log('[Style Config Manager] 🔄 开始加载样式配置...');
 
+        // 1. 尝试加载上次活跃的配置
+        const lastActiveConfig = localStorage.getItem('sillytavern_mobile_active_config');
+        if (lastActiveConfig && lastActiveConfig !== STYLE_CONFIG_FILE_NAME) {
+          console.log('[Style Config Manager] 发现上次活跃的配置:', lastActiveConfig);
+          const success = await this.loadConfigFromFile(lastActiveConfig);
+          if (success) {
+            this.activeConfigName = lastActiveConfig;
+            this.configLoaded = true;
+            console.log('[Style Config Manager] ✅ 成功加载上次活跃的配置');
+            return;
+          }
+          console.warn('[Style Config Manager] ⚠️ 加载上次活跃配置失败，回退到默认配置');
+        }
+
+        // 2. 加载默认配置
         if (sillyTavernCoreImported && getDataBankAttachmentsForSource && getFileAttachment) {
           // 使用SillyTavern原生API
           const result = await this.loadConfigFromDataBank();
           if (result) {
+            this.activeConfigName = STYLE_CONFIG_FILE_NAME;
             this.configLoaded = true;
+            // 确保记录默认配置为活跃配置
+            localStorage.setItem('sillytavern_mobile_active_config', STYLE_CONFIG_FILE_NAME);
             return;
           }
         }
 
-        // 备用方案：从localStorage加载
+        // 3. 备用方案：从localStorage加载默认配置
         await this.loadConfigFromLocalStorage();
+        this.activeConfigName = STYLE_CONFIG_FILE_NAME;
         this.configLoaded = true;
       } catch (error) {
-        console.warn('[Style Config Manager] 加载配置失败，使用默认配置:', error);
+        console.warn('[Style Config Manager] 加载配置失败，使用初始化默认值:', error);
         this.configLoaded = true;
       }
     }
@@ -872,6 +892,8 @@ ${
     // 从指定配置文件加载配置
     async loadConfigFromFile(fileName) {
       try {
+        let loaded = false;
+        
         if (sillyTavernCoreImported && getDataBankAttachmentsForSource && getFileAttachment) {
           // 从Data Bank加载
           const globalAttachments = getDataBankAttachmentsForSource('global', true);
@@ -884,20 +906,29 @@ ${
               this.currentConfig = this.mergeConfigs(DEFAULT_STYLE_CONFIG, parsedConfig);
               this.applyStyles();
               console.log('[Style Config Manager] ✅ 已加载配置:', fileName);
-              return true;
+              loaded = true;
             }
           }
         }
 
-        // 备用方案：从localStorage加载
-        const storageKey = `sillytavern_mobile_${fileName}`;
-        const stored = localStorage.getItem(storageKey);
-        if (stored) {
-          const parsedConfig = JSON.parse(stored);
-          this.currentConfig = this.mergeConfigs(DEFAULT_STYLE_CONFIG, parsedConfig);
-          this.applyStyles();
-          console.log('[Style Config Manager] ✅ 从localStorage加载配置:', fileName);
-          return true;
+        if (!loaded) {
+            // 备用方案：从localStorage加载
+            const storageKey = `sillytavern_mobile_${fileName}`;
+            const stored = localStorage.getItem(storageKey);
+            if (stored) {
+              const parsedConfig = JSON.parse(stored);
+              this.currentConfig = this.mergeConfigs(DEFAULT_STYLE_CONFIG, parsedConfig);
+              this.applyStyles();
+              console.log('[Style Config Manager] ✅ 从localStorage加载配置:', fileName);
+              loaded = true;
+            }
+        }
+
+        if (loaded) {
+            // 更新活跃配置名称
+            this.activeConfigName = fileName;
+            localStorage.setItem('sillytavern_mobile_active_config', fileName);
+            return true;
         }
 
         return false;
@@ -934,6 +965,7 @@ ${
           const configJson = JSON.stringify(this.currentConfig, null, 2);
           const file = new File([configJson], fileName, { type: 'application/json' });
 
+          // 如果是覆盖现有文件，可能需要先删除旧的（视API行为而定），这里假设直接上传会覆盖或创建新版本
           const fileUrl = await uploadFileAttachmentToServer(file, 'global');
           if (fileUrl) {
             console.log('[Style Config Manager] ✅ 配置已保存为:', fileName);
@@ -941,6 +973,10 @@ ${
             // 同时保存到localStorage
             const storageKey = `sillytavern_mobile_${fileName}`;
             localStorage.setItem(storageKey, configJson);
+
+            // 更新活跃配置记录
+            this.activeConfigName = fileName;
+            localStorage.setItem('sillytavern_mobile_active_config', fileName);
 
             return true;
           }
@@ -950,6 +986,11 @@ ${
         const storageKey = `sillytavern_mobile_${fileName}`;
         const configJson = JSON.stringify(this.currentConfig, null, 2);
         localStorage.setItem(storageKey, configJson);
+        
+        // 更新活跃配置记录
+        this.activeConfigName = fileName;
+        localStorage.setItem('sillytavern_mobile_active_config', fileName);
+        
         console.log('[Style Config Manager] ✅ 配置已保存到localStorage:', fileName);
         return true;
       } catch (error) {
@@ -1190,20 +1231,23 @@ ${
 
                 <div class="style-config-footer">
                     <div class="config-actions">
-                        <button class="config-btn preview-btn" id="preview-styles">
-                            <span>预览样式</span>
+                        <button class="config-btn save-btn" id="save-current-config-btn">
+                            <span>💾 保存</span>
                         </button>
-                        <button class="config-btn save-btn" id="save-new-config-btn">
-                            <span>另存为</span>
+                        <button class="config-btn preview-btn" id="save-new-config-btn">
+                            <span>📑 另存为</span>
+                        </button>
+                        <button class="config-btn preview-btn" id="preview-styles">
+                            <span>👁️ 预览</span>
                         </button>
                         <button class="config-btn reset-btn" id="reset-styles">
-                            <span>重置默认</span>
+                            <span>🔄 重置</span>
                         </button>
                     </div>
 
                     <div class="config-status" id="config-status">
                         <span class="status-icon">ℹ️</span>
-                        <span class="status-text">调整完成后点击另存为按钮</span>
+                        <span class="status-text">当前配置: ${this.activeConfigName === STYLE_CONFIG_FILE_NAME ? '默认配置' : this.activeConfigName.replace('_style_config.json', '')}</span>
                     </div>
                 </div>
 
@@ -3574,7 +3618,15 @@ ${
         });
       }
 
-      // 另存为按钮（原保存按钮）
+      // 保存按钮
+      const saveCurrentBtn = document.getElementById('save-current-config-btn');
+      if (saveCurrentBtn) {
+        saveCurrentBtn.addEventListener('click', async () => {
+          await this.handleSaveCurrentConfig();
+        });
+      }
+
+      // 另存为按钮
       const saveNewBtn = document.getElementById('save-new-config-btn');
       if (saveNewBtn) {
         saveNewBtn.addEventListener('click', async () => {
@@ -3662,6 +3714,41 @@ ${
       // 如果切换到配置管理标签页，加载配置列表
       if (targetTab === 'manager') {
         this.loadConfigListContent();
+      }
+    }
+
+    // 处理保存当前配置
+    async handleSaveCurrentConfig() {
+      const currentName = this.activeConfigName;
+      
+      if (currentName === STYLE_CONFIG_FILE_NAME) {
+        // 如果是默认配置，直接保存
+        if (confirm('确定要更新默认配置吗？')) {
+            this.updateStatus('正在保存默认配置...', 'loading');
+            const success = await this.saveConfig();
+            if (success) {
+                this.updateStatus('默认配置保存成功！', 'success');
+                // 确保记录
+                localStorage.setItem('sillytavern_mobile_active_config', STYLE_CONFIG_FILE_NAME);
+            } else {
+                this.updateStatus('保存默认配置失败', 'error');
+            }
+        }
+      } else {
+        // 如果是具名配置，更新该配置
+        if (confirm(`确定要更新配置 "${currentName.replace('_style_config.json', '')}" 吗？`)) {
+            this.updateStatus(`正在保存配置 ${currentName}...`, 'loading');
+            try {
+                // saveConfigWithName 会处理 activeConfigName 的更新
+                const success = await this.saveConfigWithName(currentName);
+                if (success) {
+                    this.updateStatus('配置保存成功！', 'success');
+                }
+            } catch (error) {
+                console.error('[Style Config Manager] 保存配置失败:', error);
+                this.updateStatus(`保存失败：${error.message}`, 'error');
+            }
+        }
       }
     }
 
